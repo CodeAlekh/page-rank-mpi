@@ -5,7 +5,7 @@ def convert(file_in, file_out):
     A = mmread(file_in).tocsr()
     nrows, ncols = A.shape
     mat = PETSc.Mat().create()
-    mat.setSizes([nrows, ncols])
+    mat.setSizes([ncols, nrows])
     mat.setType('aij')  # PETSc sparse format
     mat.setUp()
 
@@ -14,7 +14,8 @@ def convert(file_in, file_out):
         row_end = A.indptr[i + 1]
         cols = A.indices[row_start:row_end]
         vals = A.data[row_start:row_end]
-        mat.setValues(i, cols, vals)
+        for j, val in zip(cols, vals):
+            mat.setValue(j, i, val)
 
     mat.assemblyBegin()
     mat.assemblyEnd()
@@ -23,3 +24,5 @@ def convert(file_in, file_out):
     mat.view(viewer)
     viewer.destroy()
     mat.destroy()
+
+convert("../data/small.mtx", "../data/small.pm")

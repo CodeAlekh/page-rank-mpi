@@ -51,10 +51,20 @@ void printLocalMap(int rank, const std::unordered_map<int, double>& mp)
     std::cout << std::endl;
 }
 
+void print_map_bool(int rank, const std::unordered_map<int, bool>& mp)
+{
+    std::cout << "==== Rank " << rank << " map ====\n";
+    for (const auto& p : mp) {
+        std::cout << "  index = " << p.first 
+                  << "  value = " << p.second << "\n";
+    }
+    std::cout << std::endl;
+}
+
 void print_vector(const std::vector<double> &v, int rank) {
     printf("\n================ Rank %d =================\n", rank);
     for (int i = 0; i < v.size(); i++) {
-        std::cout << "[" << i << "] = " << v[i] << "\n";
+        std::cout << "Rank" << rank << " [" << i << "] = " << v[i] << "\n";
     }
     fflush(stdout);
 }
@@ -335,4 +345,56 @@ LocalCSR readParallelPM(const char* filename, MPI_Comm comm)
     A.off_proc.vals = std::move(off_proc_vals);
 
     return A;
+}
+
+void update_on_off_values(LocalCSR& A, int rank, int num_procs) {
+    int nrows = A.global_rows;
+    int local_nnz = A.local_nnz;
+    int rows_per_proc = nrows / num_procs;
+    int row_remainder = nrows % num_procs;
+    int local_rows = rows_per_proc + (rank < row_remainder ? 1 : 0);
+    std::vector<int>& rowptr = A.rowptr;
+    std::vector<int>& col_indices = A.colind;
+    std::vector<double>& vals = A.vals;
+    int first_col = A.first_col;
+    int local_cols = A.local_cols;;
+    // Prepare on/off proc CSR pieces
+    std::vector<int>& on_proc_rowptr = A.on_proc.rowptr;
+    on_proc_rowptr.clear();
+    on_proc_rowptr.resize(local_rows + 1, 0);
+    std::vector<int>& off_proc_rowptr = A.off_proc.rowptr;
+    off_proc_rowptr.clear();
+    off_proc_rowptr.resize(local_rows + 1, 0);
+    std::vector<int>& on_proc_colind = A.on_proc.colind; 
+    on_proc_colind.clear();
+    std::vector<double>& on_proc_vals = A.on_proc.vals; 
+    on_proc_vals.clear();
+    std::vector<int>& off_proc_colind = A.off_proc.colind;
+    off_proc_colind.clear(); 
+    std::vector<double>&  off_proc_vals = A.off_proc.vals;
+    off_proc_vals.clear();
+
+    int on_count = 0;
+    int off_count = 0;
+    for (int r = 0; r < local_rows; ++r) {
+        int start = rowptr[r];
+        int end = rowptr[r + 1];
+        for (int j = start; j < end; ++j) {
+            int col = col_indices[j];
+            double v = vals[j];
+
+            // on-proc if column index belongs to this rank's vector partition
+            if (col >= first_col && col < first_col + local_cols) {
+                on_proc_colind.push_back(col);
+                on_proc_vals.push_back(v);
+                ++on_count;
+            } else {
+                off_proc_colind.push_back(col);
+                off_proc_vals.push_back(v);
+                ++off_count;
+            }
+        }
+        on_proc_rowptr[r + 1] = on_count;
+        off_proc_rowptr[r + 1] = off_count;
+    }
 }

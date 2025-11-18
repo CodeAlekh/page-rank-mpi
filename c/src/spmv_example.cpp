@@ -16,13 +16,11 @@ int main(int argc, char** argv) {
 
     std::string path = std::string(SRC_DIR) + "/data/small.pm";
     LocalCSR A = readParallelPM(path.c_str(), MPI_COMM_WORLD);
-    std::vector<double> x(A.local_cols, 1);
-    std::vector<double> x_remote(A.global_cols - A.local_cols, 1);
-    std::vector<double> y(A.local_cols, 0.0);
 
-    vec_mul(A, x, y, MPI_COMM_WORLD);
+    std::vector<double> v(A.local_rows, 1/A.global_rows);
+    page_rank(A, v, MPI_COMM_WORLD);
 
-    print_vector(y, rank);
+    print_vector(v, rank);
 
     MPI_Finalize();
 }
