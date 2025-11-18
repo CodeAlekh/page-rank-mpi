@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/page-rank.dir/link.d "CMakeFiles/page-rank.dir/src/main.cpp.o" -o page-rank

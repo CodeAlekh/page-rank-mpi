@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/bwitkowski/Documents/cs442/page-rank-mpi/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
