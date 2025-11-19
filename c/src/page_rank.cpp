@@ -7,7 +7,7 @@
 
 int main(int argc, char** argv) {
 
-     if (argc < 2) {
+    if (argc < 2) {
         printf("ERROR: Pass in the .pm file name as argument\n");
         return 0;
     }
@@ -15,6 +15,17 @@ int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
     char* filename = argv[1];
+    int iter = 100;
+    double tolerance = 1e-4;
+
+    if (argc > 2) {
+        tolerance = atof(argv[2]);
+        printf("Tolerance: %lf\n", tolerance);
+    }
+
+    if (argc > 3) {
+        iter = atoi(argv[3]);
+    }
 
     int rank, num_procs;
 
@@ -24,12 +35,8 @@ int main(int argc, char** argv) {
     std::string path = std::string(SRC_DIR) + "/data/" + filename;
     LocalCSR A = readParallelPM(path.c_str(), MPI_COMM_WORLD);
 
-    std::vector<double> x(A.local_rows, 1.0/A.global_rows);
-
-    std::vector<double> y(A.local_rows, 0);
-    vec_mul(A, x, y, MPI_COMM_WORLD);
-
-    print_vector(y, rank);
+    std::vector<double> v(A.local_rows, 1/A.global_rows);
+    page_rank(A, v, MPI_COMM_WORLD, iter, tolerance);
 
     MPI_Finalize();
 }
