@@ -4,3 +4,4 @@ venv/
 .venv/
 *.mtx
 .git/
+copy.sh
