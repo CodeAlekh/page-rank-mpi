@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <mpi.h>
 #include "mat_op.cpp"
+#include "my_time.cpp"
 
 int main(int argc, char** argv) {
 
@@ -13,6 +14,7 @@ int main(int argc, char** argv) {
     }
 
     MPI_Init(&argc, &argv);
+    MPI_Comm comm = MPI_COMM_WORLD;
 
     char* filename = argv[1];
     int iter = 100;
@@ -29,14 +31,35 @@ int main(int argc, char** argv) {
 
     int rank, num_procs;
 
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &num_procs);
 
     std::string path = std::string(SRC_DIR) + "/data/" + filename;
-    LocalCSR A = readParallelPM(path.c_str(), MPI_COMM_WORLD);
+
+    Time overall, file_read_time, page_rank_time;
+    overall.start_time();
+
+    file_read_time.start_time();
+    LocalCSR A = readParallelPM(path.c_str(), comm);
+    double f_read = file_read_time.get_time();
 
     std::vector<double> v(A.local_rows, 1/A.global_rows);
-    page_rank(A, v, MPI_COMM_WORLD, iter, tolerance);
+
+    page_rank_time.start_time();
+    page_rank(A, v, comm, iter, tolerance);
+    double p_rank = page_rank_time.get_time();
+
+    double overall_time = overall.get_time();
+
+    MPI_Allreduce(MPI_IN_PLACE, &f_read, 1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(MPI_IN_PLACE, &p_rank, 1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(MPI_IN_PLACE, &overall_time, 1, MPI_DOUBLE, MPI_SUM, comm);
+
+    if (rank == 0) {
+        printf("File read time: %lf \n", f_read);
+        printf("Page Rank convergence time: %lf \n", p_rank);
+        printf("Total time: %lf \n", overall_time);
+    }
 
     MPI_Finalize();
 }
