@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     std::vector<double> v(A.local_rows, 1.0/A.global_rows);
 
     page_rank_time.start_time();
-    page_rank(A, v, comm, iter, tolerance);
+    page_rank_modified(A, v, comm, iter, tolerance);
     double p_rank = page_rank_time.get_time();
 
     double overall_time = overall.get_time();

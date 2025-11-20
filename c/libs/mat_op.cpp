@@ -44,6 +44,18 @@ std::unordered_map<int, double> index_to_value_map(
     return mp;
 }
 
+struct CommunicationDetails {
+    int* r_index_count;
+    int* s_index_count;
+    vector<int> r_index_buffer;
+    vector<int> s_index_buffer; 
+    int r_offset;
+    int* r_index_disp;
+    int* s_index_disp;
+    int s_offset;
+
+};
+
 unordered_map<int,double> gather_off_proc_vectors(LocalCSR &A, std::vector<double> &x_local, MPI_Comm comm) {
     int rank, num_procs;
     MPI_Comm_rank(comm, &rank);
@@ -138,6 +150,129 @@ unordered_map<int,double> gather_off_proc_vectors(LocalCSR &A, std::vector<doubl
     
 }
 
+CommunicationDetails build_comm_details(LocalCSR &A, std::vector<double> &x_local, MPI_Comm comm) {
+    int rank, num_procs;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &num_procs);
+
+    int* my_required_count = (int*) calloc(num_procs, sizeof(int));
+    int* other_required_count = (int*) calloc(num_procs, sizeof(int));
+    map<int, std::vector<int>> owner_to_columns;
+
+    set<int> unique_col_index_set(A.colind.begin(), A.colind.end());
+    vector<int> unique_cols(unique_col_index_set.begin(), unique_col_index_set.end());
+
+    for (int i = 0; i < unique_cols.size(); i++) {
+        int col_idx = unique_cols[i];
+        int owner = calculate_process_rank(num_procs, A.global_cols,col_idx );
+        owner_to_columns[owner].push_back(col_idx);
+        my_required_count[owner]++;
+    }
+    MPI_Alltoall(my_required_count, 1, MPI_INT, other_required_count, 1, MPI_INT, comm);
+
+    //Now we have how many element each process needs to send to the others. We start by sending indices first
+    vector<int> s_index_buffer;
+    s_index_buffer.reserve(A.global_cols); //Just to prevent reallocation
+    int* s_index_count = (int*) calloc(num_procs, sizeof(int));
+    int* s_index_disp = (int*) calloc(num_procs, sizeof(int));
+    int s_offset = 0;
+    int r_offset = 0;
+    int* r_index_count = (int*) calloc(num_procs, sizeof(int));
+    int* r_index_disp = (int*) calloc(num_procs, sizeof(int));
+    vector<int> r_index_buffer;
+    r_index_buffer.reserve(A.global_cols); //Just to prevent reallocation
+    for (int proc = 0; proc < num_procs; proc++) {
+        if (rank == proc) {
+            s_index_disp[proc] = s_offset;
+            s_index_count[proc] = 0;
+
+            r_index_disp[proc] = r_offset;
+            r_index_count[proc] = 0;
+
+        } else {
+            vector<int> col_idx_list = owner_to_columns[proc];
+            int size = col_idx_list.size();
+            s_index_disp[proc] = s_offset;
+            s_index_count[proc] = size;
+            s_offset += size;
+            for (int col_idx: col_idx_list) {
+                s_index_buffer.push_back(col_idx);
+            }
+            // Receiving count and displacements
+            r_index_disp[proc] = r_offset;
+            r_index_count[proc] = other_required_count[proc];
+            r_offset += other_required_count[proc];
+        }
+    }
+    //Size of the receiving buffer is final. So we do this.
+    r_index_buffer.resize(r_offset);
+
+    MPI_Alltoallv(
+        s_index_buffer.data(), s_index_count, s_index_disp, MPI_INT,
+        r_index_buffer.data(), r_index_count, r_index_disp, MPI_INT, comm
+    );
+    CommunicationDetails c;
+    c.r_index_buffer = r_index_buffer;
+    c.r_index_count = r_index_count;
+    c.r_index_disp = r_index_disp;
+    c.r_offset = r_offset;
+    c.s_index_buffer = s_index_buffer;
+    c.s_index_count = s_index_count;
+    c.s_index_disp = s_index_disp;
+    c.s_offset = s_offset;
+    return c;
+}
+
+double* gather_value_from_communication_details(LocalCSR &A, std::vector<double> &x_local, CommunicationDetails& c, int rank, int num_procs, MPI_Comm comm) {
+    //Now we have all required indices which we must send to each procses. Send it using alltoallv
+    double* s_val_buffer = (double*) calloc(c.r_offset, sizeof(double));
+    double* r_val_buffer = (double*) calloc(c.s_offset, sizeof(double));
+
+    for (int proc = 0; proc < num_procs; proc++) {
+        if (rank == proc) {continue;}
+        else {
+            for (int i = 0; i < c.r_index_count[proc]; i++) {
+                int global_index = c.r_index_buffer[c.r_index_disp[proc] + i];
+                int local_index = local_index_from_global(global_index,rank,num_procs, A.global_cols);
+                s_val_buffer[c.r_index_disp[proc] + i] = x_local[local_index];
+            }
+        }
+    }
+
+    MPI_Alltoallv(
+        s_val_buffer, c.r_index_count, c.r_index_disp, MPI_DOUBLE,
+        r_val_buffer, c.s_index_count, c.s_index_disp, MPI_DOUBLE, comm
+    );
+
+    return r_val_buffer;
+}
+
+void renumber_off_proc_columns(LocalCSR& A, const CommunicationDetails& c) {
+    
+    // 1. Create a temporary lookup map: Global_ID -> Buffer_Index
+    // c.s_index_buffer contains the Global IDs we requested.
+    // The values we receive later will be in this EXACT order.
+    std::unordered_map<int, int> global_to_local_map;
+    for (size_t i = 0; i < c.s_index_buffer.size(); i++) {
+        global_to_local_map[c.s_index_buffer[i]] = i;
+    }
+
+    // 2. Update the CSR Matrix
+    // Iterate through the column indices of the off-process matrix
+    for (size_t k = 0; k < A.off_proc.colind.size(); k++) {
+        int global_col = A.off_proc.colind[k];
+        
+        // Instead of the global ID, store the index where this value 
+        // will appear in the receive buffer.
+        if (global_to_local_map.find(global_col) != global_to_local_map.end()) {
+            A.off_proc.colind[k] = global_to_local_map[global_col];
+        } else {
+            printf("Error: Matrix needs col %d but we didn't request it!\n", global_col);
+            throw std::runtime_error("Critical: Off-proc column missing from communication plan.");
+        }
+    }
+}
+
 void spmv_serial(const CSR &A, const std::vector<double> &x, std::vector<double> &y, int rank, int num_procs, int total_cols) {
     int nrows = A.rowptr.size() - 1;
     y.assign(nrows, 0.0);
@@ -167,6 +302,25 @@ void spmv_serial(const CSR &A, const std::vector<double> &x, std::vector<double>
     }
 }
 
+void spmv_serial(const CSR &A, double* ordered_remote_vals, std::vector<double> &y) {
+    int nrows = A.rowptr.size() - 1;
+    y.assign(nrows, 0.0);
+
+    for (int i = 0; i < nrows; i++) {
+        double sum = 0.0;
+
+        int row_start = A.rowptr[i];
+        int row_end   = A.rowptr[i + 1];
+
+        for (int k = row_start; k < row_end; k++) {
+            int col = A.colind[k];
+            sum += A.vals[k] * ordered_remote_vals[col];
+        }
+
+        y[i] = sum;
+    }
+}
+
 void spmv_serial(const CSR &A, unordered_map<int,double> index_to_value, std::vector<double> &y) {
     int nrows = A.rowptr.size() - 1;
     y.assign(nrows, 0.0);
@@ -186,6 +340,31 @@ void spmv_serial(const CSR &A, unordered_map<int,double> index_to_value, std::ve
     }
 }
 
+void vec_mul_modified(LocalCSR& A, vector<double>& x_local, std::vector<double>& y, CommunicationDetails& c, MPI_Comm comm) {
+    int rank, num_procs;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &num_procs);
+
+    // 1. Gather remote vector
+
+    double* remote_values_ordered = gather_value_from_communication_details(A, x_local, c, rank, num_procs, comm);
+
+    // 2. Compute on-proc part
+    std::vector<double> y_local(A.local_rows, 0.0);
+    spmv_serial(A.on_proc, x_local, y_local, rank, num_procs, A.global_cols);
+
+
+    // 3. Compute off-proc part
+    std::vector<double> y_remote;
+    spmv_serial(A.off_proc, remote_values_ordered, y_remote);
+
+    // 4. Add them
+    int n = A.local_rows;
+    y.resize(n);
+    for (int i = 0; i < n; i++)
+        y[i] = y_local[i] + y_remote[i];
+
+}
 
 void vec_mul(LocalCSR& A, vector<double>& x_local, std::vector<double>& y, MPI_Comm comm) {
     int rank, num_procs;
@@ -338,6 +517,13 @@ void scalar_multiply(vector<double>& vec, double d) {
     }
 }
 
+void scalar_multiply_add(vector<double>& vec, double mul, double add) {
+    for (int i = 0; i < vec.size(); i++) {
+        vec[i] *= mul;
+        vec[i] += add;
+    }
+}
+
 vector<double> teleportation_vector(int local_size, int global_size) {
     return vector<double>(local_size, (1-DAMPING)/global_size);
 }
@@ -357,6 +543,21 @@ void add_vec(vector<double>& main, vector<double>& add) {
     for (int i = 0; i < main.size(); i++) {
         main[i] += add[i];
     }
+}
+
+void page_rank_step_modified(LocalCSR& A, vector<double>& rank_vec, vector<int> outdegree, double teleportation_factor, CommunicationDetails& c, int rank, int num_procs, MPI_Comm comm) {
+    vector<double> next(A.local_rows, 0.0);
+    double local_sum = dangling_sum_local(A, rank_vec, outdegree);
+    double total_dangling_sum = 0.0;
+    MPI_Allreduce(&local_sum, &total_dangling_sum, 1, MPI_DOUBLE, MPI_SUM, comm);
+
+    double dangling_correction =  DAMPING * (total_dangling_sum / A.global_rows);
+
+    vec_mul_modified(A, rank_vec, next, c, comm);
+
+    //Dont need arrays for dangling and teleportation since they're same for every elements
+    scalar_multiply_add(next, DAMPING, (dangling_correction + teleportation_factor));
+    rank_vec = next;
 }
 
 void page_rank_step(LocalCSR& A, vector<double>& rank_vec, int rank, int num_procs, MPI_Comm comm) {
@@ -404,9 +605,49 @@ void page_rank(LocalCSR& A, vector<double>& rank_vec, MPI_Comm comm, int max_ite
         MPI_Allreduce(&local_diff, &global_diff, 1, MPI_DOUBLE, MPI_SUM, comm);
 
         // Check convergence
-        if (rank == 0) {
-            printf("Iter %d: diff = %.12f\n", iter, global_diff);
+        // if (rank == 0) {
+        //     printf("Iter %d: diff = %.12f\n", iter, global_diff);
+        // }
+
+        if (global_diff < tol)
+            break;
+    }
+}
+
+void page_rank_modified(LocalCSR& A, vector<double>& rank_vec, MPI_Comm comm, int max_iters = 100, double tol = 1e-4) {
+
+    int rank, num_procs;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &num_procs);
+    vector<double> old(A.local_rows);
+
+    vector<int> outdegree(A.global_cols);
+    normalize_outdegrees_allreduce(A, rank, num_procs, outdegree, comm);
+
+    CommunicationDetails c = build_comm_details(A, rank_vec, comm);
+
+    //Modify to local index so that we wont need map every iteration
+    renumber_off_proc_columns(A,c);
+
+    double teleportation_factor = (1-DAMPING)/A.global_rows;
+
+    for (int iter = 0; iter < max_iters; iter++) {
+
+        // Savinf previous value for tolerance
+        old = rank_vec;
+
+        // One PageRank iteration
+        page_rank_step_modified(A, rank_vec, outdegree, teleportation_factor, c, rank, num_procs, comm);
+
+        // Compute local L1 diff
+        double local_diff = 0.0;
+        for (int i = 0; i < A.local_rows; i++) {
+            local_diff += std::fabs(rank_vec[i] - old[i]);
         }
+
+        // All Reduce to global differece to check tolerance
+        double global_diff = 0.0;
+        MPI_Allreduce(&local_diff, &global_diff, 1, MPI_DOUBLE, MPI_SUM, comm);
 
         if (global_diff < tol)
             break;
