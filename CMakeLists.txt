@@ -33,7 +33,9 @@ target_include_directories(mylib PUBLIC c/libs)
 # Executable
 add_executable(spmv_example c/src/spmv_example.cpp)
 add_executable(page_rank c/src/page_rank.cpp)
+add_executable(mod_page_rank c/src/page_rank_mod.cpp)
 
 # Link the library + MPI
 target_link_libraries(spmv_example PRIVATE mylib ${MPI_LIBRARIES})
 target_link_libraries(page_rank PRIVATE mylib ${MPI_LIBRARIES})
+target_link_libraries(mod_page_rank PRIVATE mylib ${MPI_LIBRARIES})
