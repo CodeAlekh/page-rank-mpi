@@ -273,6 +273,31 @@ void renumber_off_proc_columns(LocalCSR& A, const CommunicationDetails& c) {
     }
 }
 
+void spmv_serial_threaded(const CSR &A, const std::vector<double> &x, std::vector<double> &y, int rank, int num_procs, int total_cols) {
+    int nrows = A.rowptr.size() - 1;
+    y.assign(nrows, 0.0);
+
+    #pragma omp parallel for
+    for (int i = 0; i < nrows; i++) {
+        double sum = 0.0;
+
+        int row_start = A.rowptr[i];
+        int row_end   = A.rowptr[i + 1];
+
+        for (int k = row_start; k < row_end; k++) {
+            int col = A.colind[k];
+            int local_col = local_index_from_global(
+                                col, 
+                                rank,
+                                num_procs,
+                                total_cols
+                            );
+            sum += A.vals[k] * x[local_col];
+        }
+        y[i] = sum;
+    }
+}
+
 void spmv_serial(const CSR &A, const std::vector<double> &x, std::vector<double> &y, int rank, int num_procs, int total_cols) {
     int nrows = A.rowptr.size() - 1;
     y.assign(nrows, 0.0);
@@ -291,11 +316,27 @@ void spmv_serial(const CSR &A, const std::vector<double> &x, std::vector<double>
                                 num_procs,
                                 total_cols
                             );
-            // if(rank == 1) {
-            //     printf("k: %d, Col: %d -> local_col: %d, A.vals[k] = %lf, x[local_col] = %lf \n", k, col, local_col, A.vals[k], x[local_col]);
-            //     fflush(stdout);
-            // }
             sum += A.vals[k] * x[local_col];
+        }
+
+        y[i] = sum;
+    }
+}
+
+void spmv_serial_threaded(const CSR &A, double* ordered_remote_vals, std::vector<double> &y) {
+    int nrows = A.rowptr.size() - 1;
+    y.assign(nrows, 0.0);
+
+    #pragma omp parallel for
+    for (int i = 0; i < nrows; i++) {
+        double sum = 0.0;
+
+        int row_start = A.rowptr[i];
+        int row_end   = A.rowptr[i + 1];
+
+        for (int k = row_start; k < row_end; k++) {
+            int col = A.colind[k];
+            sum += A.vals[k] * ordered_remote_vals[col];
         }
 
         y[i] = sum;
@@ -338,6 +379,32 @@ void spmv_serial(const CSR &A, unordered_map<int,double> index_to_value, std::ve
 
         y[i] = sum;
     }
+}
+
+void vec_mul_threaded(LocalCSR& A, vector<double>& x_local, std::vector<double>& y, CommunicationDetails& c, MPI_Comm comm) {
+    int rank, num_procs;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &num_procs);
+
+    // 1. Gather remote vector
+
+    double* remote_values_ordered = gather_value_from_communication_details(A, x_local, c, rank, num_procs, comm);
+
+    // 2. Compute on-proc part
+    std::vector<double> y_local(A.local_rows, 0.0);
+    spmv_serial_threaded(A.on_proc, x_local, y_local, rank, num_procs, A.global_cols);
+
+
+    // 3. Compute off-proc part
+    std::vector<double> y_remote;
+    spmv_serial_threaded(A.off_proc, remote_values_ordered, y_remote);
+
+    // 4. Add them
+    int n = A.local_rows;
+    y.resize(n);
+    for (int i = 0; i < n; i++)
+        y[i] = y_local[i] + y_remote[i];
+
 }
 
 void vec_mul_modified(LocalCSR& A, vector<double>& x_local, std::vector<double>& y, CommunicationDetails& c, MPI_Comm comm) {
@@ -517,6 +584,13 @@ void scalar_multiply(vector<double>& vec, double d) {
     }
 }
 
+void scalar_multiply_add_threaded(vector<double>& vec, double mul, double add) {
+    for (int i = 0; i < vec.size(); i++) {
+        vec[i] *= mul;
+        vec[i] += add;
+    }
+}
+
 void scalar_multiply_add(vector<double>& vec, double mul, double add) {
     for (int i = 0; i < vec.size(); i++) {
         vec[i] *= mul;
@@ -526,6 +600,17 @@ void scalar_multiply_add(vector<double>& vec, double mul, double add) {
 
 vector<double> teleportation_vector(int local_size, int global_size) {
     return vector<double>(local_size, (1-DAMPING)/global_size);
+}
+
+double dangling_sum_local_threaded(LocalCSR& A, vector<double>& page_rank_local, vector<int>& outdegree) {
+    double sum = 0.0;
+    for (int i = 0; i < A.local_rows; i++) {
+        int global_index = A.first_row + i;
+        if (outdegree[global_index] == 0) {
+            sum += page_rank_local[i];
+        }
+    }
+    return sum;
 }
 
 double dangling_sum_local(LocalCSR& A, vector<double>& page_rank_local, vector<int>& outdegree) {
@@ -545,7 +630,22 @@ void add_vec(vector<double>& main, vector<double>& add) {
     }
 }
 
-void page_rank_step_modified(LocalCSR& A, vector<double>& rank_vec, vector<int> outdegree, double teleportation_factor, CommunicationDetails& c, int rank, int num_procs, MPI_Comm comm) {
+void page_rank_step_threaded(LocalCSR& A, vector<double>& rank_vec, vector<int>& outdegree, double teleportation_factor, CommunicationDetails& c, int rank, int num_procs, MPI_Comm comm) {
+    vector<double> next(A.local_rows, 0.0);
+    double local_sum = dangling_sum_local_threaded(A, rank_vec, outdegree);
+    double total_dangling_sum = 0.0;
+    MPI_Allreduce(&local_sum, &total_dangling_sum, 1, MPI_DOUBLE, MPI_SUM, comm);
+
+    double dangling_correction =  DAMPING * (total_dangling_sum / A.global_rows);
+
+    vec_mul_threaded(A, rank_vec, next, c, comm);
+
+    //Dont need arrays for dangling and teleportation since they're same for every elements
+    scalar_multiply_add_threaded(next, DAMPING, (dangling_correction + teleportation_factor));
+    rank_vec = next;
+}
+
+void page_rank_step_modified(LocalCSR& A, vector<double>& rank_vec, vector<int>& outdegree, double teleportation_factor, CommunicationDetails& c, int rank, int num_procs, MPI_Comm comm) {
     vector<double> next(A.local_rows, 0.0);
     double local_sum = dangling_sum_local(A, rank_vec, outdegree);
     double total_dangling_sum = 0.0;
@@ -641,6 +741,47 @@ void page_rank_modified(LocalCSR& A, vector<double>& rank_vec, MPI_Comm comm, in
 
         // Compute local L1 diff
         double local_diff = 0.0;
+        for (int i = 0; i < A.local_rows; i++) {
+            local_diff += std::fabs(rank_vec[i] - old[i]);
+        }
+
+        // All Reduce to global differece to check tolerance
+        double global_diff = 0.0;
+        MPI_Allreduce(&local_diff, &global_diff, 1, MPI_DOUBLE, MPI_SUM, comm);
+
+        if (global_diff < tol)
+            break;
+    }
+}
+
+void page_rank_threaded(LocalCSR& A, vector<double>& rank_vec, MPI_Comm comm, int max_iters = 100, double tol = 1e-4) {
+
+    int rank, num_procs;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &num_procs);
+    vector<double> old(A.local_rows);
+
+    vector<int> outdegree(A.global_cols, 0);
+    normalize_outdegrees_allreduce(A, rank, num_procs, outdegree, comm);
+
+    CommunicationDetails c = build_comm_details(A, rank_vec, comm);
+
+    //Modify to local index so that we wont need map every iteration
+    renumber_off_proc_columns(A,c);
+
+    double teleportation_factor = (1-DAMPING)/A.global_rows;
+
+    for (int iter = 0; iter < max_iters; iter++) {
+
+        // Savinf previous value for tolerance
+        old = rank_vec;
+
+        // One PageRank iteration
+        page_rank_step_threaded(A, rank_vec, outdegree, teleportation_factor, c, rank, num_procs, comm);
+
+        // Compute local L1 diff
+        double local_diff = 0.0;
+        // #pragma omp parallel for reduction(+:local_diff)
         for (int i = 0; i < A.local_rows; i++) {
             local_diff += std::fabs(rank_vec[i] - old[i]);
         }
