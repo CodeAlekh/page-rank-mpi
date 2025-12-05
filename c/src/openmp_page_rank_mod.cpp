@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <mpi.h>
-#include "mat_op.cpp"
+#include "openmp_mat_op.cpp"
 #include "my_time.cpp"
 
 int main(int argc, char** argv) {
@@ -43,15 +43,16 @@ int main(int argc, char** argv) {
 
     Time overall, file_read_time, page_rank_time;
     overall.start_time();
+
     file_read_time.start_time();
-    
     LocalCSR A = readParallelPM(path.c_str(), comm);
     double f_read = file_read_time.get_time();
     MPI_Allreduce(MPI_IN_PLACE, &f_read, 1, MPI_DOUBLE, MPI_MAX, comm);
+
     std::vector<double> v(A.local_rows, 1.0 / A.global_rows);
 
     page_rank_time.start_time();
-    page_rank_threaded(A, v, comm, iter, tolerance);
+    enhanced_page_rank_threaded(A, v, comm, iter, tolerance);
     double p_rank = page_rank_time.get_time();
     MPI_Allreduce(MPI_IN_PLACE, &p_rank, 1, MPI_DOUBLE, MPI_MAX, comm);
 
