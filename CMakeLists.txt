@@ -36,9 +36,11 @@ add_executable(spmv_example c/src/spmv_example.cpp)
 add_executable(page_rank c/src/page_rank.cpp)
 add_executable(mod_page_rank c/src/page_rank_mod.cpp)
 add_executable(openmp_page_rank c/src/openmp_page_rank.cpp)
+add_executable(enhanced_openmp_page_rank c/src/openmp_page_rank_mod.cpp)
 
 # Link the library + MPI
 target_link_libraries(spmv_example PRIVATE mylib ${MPI_LIBRARIES})
 target_link_libraries(page_rank PRIVATE mylib ${MPI_LIBRARIES})
 target_link_libraries(mod_page_rank PRIVATE mylib ${MPI_LIBRARIES})
 target_link_libraries(openmp_page_rank PRIVATE mylib ${MPI_LIBRARIES} OpenMP::OpenMP_CXX)
+target_link_libraries(enhanced_openmp_page_rank PRIVATE mylib ${MPI_LIBRARIES} OpenMP::OpenMP_CXX)
