@@ -1,0 +1,2 @@
+scipy
+petsc4py

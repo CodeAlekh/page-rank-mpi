@@ -1,0 +1,7 @@
+.vscode/
+build/
+venv/
+.venv/
+*.mtx
+.git/
+copy.sh
