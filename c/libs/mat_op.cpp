@@ -1,6 +1,7 @@
 #include "reader.cpp"
 #include <set>
 #include <cmath>
+#include <map>
 #define DAMPING 0.85
 
 using namespace std;

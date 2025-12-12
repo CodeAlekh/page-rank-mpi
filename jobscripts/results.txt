@@ -1,0 +1,29 @@
+pagerank_mod,1,8.121293
+pagerank_mod,2,4.608953
+pagerank_mod,4,4.553551
+pagerank_mod,8,1.940652
+pagerank_mod,16,1.111695
+pagerank_mod,32,0.625404
+pagerank_mod,64,0.383030
+pagerank_mod,128,1.138537
+pagerank_mod,256,1.600940
+
+pagerank_base,1  ,125.017060
+pagerank_base,2  ,77.713790
+pagerank_base,4  ,93.166176
+pagerank_base,8   ,35.913885
+pagerank_base,16 ,21.236413
+pagerank_base,32  ,12.047864
+pagerank_base,64  ,6.459016
+pagerank_base,128 ,4.521425
+pagerank_base,256 ,4.338857
+
+pagerank_openmp,1,
+pagerank_openmp,2,
+pagerank_openmp,4,
+pagerank_openmp,8,
+pagerank_openmp,16,
+pagerank_openmp,32, 
+pagerank_openmp,64, 
+pagerank_openmp,128,
+pagerank_openmp,256,
