@@ -146,6 +146,22 @@ unordered_map<int,double> gather_off_proc_vectors(LocalCSR &A, std::vector<doubl
         r_val_buffer, s_index_count, s_index_disp, MPI_DOUBLE, comm
     );
 
+    //cleanup
+    free(my_required_count);
+    free(other_required_count);
+
+    free(s_index_count);
+    free(s_index_disp);
+    free(r_index_count);
+    free(r_index_disp);
+
+    free(s_val_buffer);
+
+    free(s_val_count);
+    free(s_val_disp);
+    free(r_val_count);
+    free(r_val_disp);
+
     return  index_to_value_map(s_index_buffer.data(), r_val_buffer, s_index_buffer.size());
     
 }
@@ -220,6 +236,10 @@ CommunicationDetails build_comm_details(LocalCSR &A, std::vector<double> &x_loca
     c.s_index_count = s_index_count;
     c.s_index_disp = s_index_disp;
     c.s_offset = s_offset;
+
+    free(my_required_count);
+    free(other_required_count);
+
     return c;
 }
 
@@ -244,6 +264,7 @@ double* gather_value_from_communication_details(LocalCSR &A, std::vector<double>
         r_val_buffer, c.s_index_count, c.s_index_disp, MPI_DOUBLE, comm
     );
 
+    free(s_val_buffer);
     return r_val_buffer;
 }
 
