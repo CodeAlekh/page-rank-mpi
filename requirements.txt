@@ -1,2 +1,4 @@
 scipy
 petsc4py
+fast_matrix_market
+matplotlib

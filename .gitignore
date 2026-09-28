@@ -299,3 +299,10 @@ pip-selfcheck.json
 copy.sh
 jobscripts/
 data/
+# Large graph data (download from SuiteSparse, see README); keep only the small test graph
+data/*
+!data/small.mtx
+!data/small.pm
+
+# Course report (not for public distribution)
+*.pdf
